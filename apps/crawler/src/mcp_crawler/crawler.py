@@ -14,7 +14,7 @@ from psycopg.types.json import Jsonb
 from sqlalchemy import text
 
 from mcp_crawler.classifier import classify_server
-from mcp_crawler.db import engine, fetch_one
+from mcp_crawler.db import engine, fetch_all, fetch_one
 from mcp_crawler.github import get_readme, search_all_mcp_repos
 
 
@@ -145,6 +145,7 @@ def _upsert_server(conn, repo: dict[str, Any], classification: dict[str, Any],
                  repo_created_at, repo_pushed_at,
                  readme_md, readme_excerpt, install_command, install_config,
                  category, tags, summary, quality_score,
+                 classifier_provider,
                  is_official, indexed_at, updated_at
                )
                VALUES (
@@ -153,31 +154,33 @@ def _upsert_server(conn, repo: dict[str, Any], classification: dict[str, Any],
                  :repo_created_at, :repo_pushed_at,
                  :readme_md, :readme_excerpt, :install_command, :install_config,
                  :category, :tags, :summary, :quality_score,
+                 :classifier_provider,
                  :is_official, NOW(), NOW()
                )
                ON CONFLICT (full_name) DO UPDATE SET
-                 owner            = EXCLUDED.owner,
-                 name             = EXCLUDED.name,
-                 html_url         = EXCLUDED.html_url,
-                 description      = EXCLUDED.description,
-                 homepage         = EXCLUDED.homepage,
-                 language         = EXCLUDED.language,
-                 license          = EXCLUDED.license,
-                 topics           = EXCLUDED.topics,
-                 stars            = EXCLUDED.stars,
-                 forks            = EXCLUDED.forks,
-                 open_issues      = EXCLUDED.open_issues,
-                 repo_pushed_at   = EXCLUDED.repo_pushed_at,
-                 readme_md        = COALESCE(EXCLUDED.readme_md, raw.servers.readme_md),
-                 readme_excerpt   = COALESCE(EXCLUDED.readme_excerpt, raw.servers.readme_excerpt),
-                 install_command  = COALESCE(EXCLUDED.install_command, raw.servers.install_command),
-                 install_config   = COALESCE(EXCLUDED.install_config, raw.servers.install_config),
-                 category         = EXCLUDED.category,
-                 tags             = EXCLUDED.tags,
-                 summary          = EXCLUDED.summary,
-                 quality_score    = EXCLUDED.quality_score,
-                 is_official      = EXCLUDED.is_official,
-                 updated_at       = NOW()"""
+                 owner               = EXCLUDED.owner,
+                 name                = EXCLUDED.name,
+                 html_url            = EXCLUDED.html_url,
+                 description         = EXCLUDED.description,
+                 homepage            = EXCLUDED.homepage,
+                 language            = EXCLUDED.language,
+                 license             = EXCLUDED.license,
+                 topics              = EXCLUDED.topics,
+                 stars               = EXCLUDED.stars,
+                 forks               = EXCLUDED.forks,
+                 open_issues         = EXCLUDED.open_issues,
+                 repo_pushed_at      = EXCLUDED.repo_pushed_at,
+                 readme_md           = COALESCE(EXCLUDED.readme_md, raw.servers.readme_md),
+                 readme_excerpt      = COALESCE(EXCLUDED.readme_excerpt, raw.servers.readme_excerpt),
+                 install_command     = COALESCE(EXCLUDED.install_command, raw.servers.install_command),
+                 install_config      = COALESCE(EXCLUDED.install_config, raw.servers.install_config),
+                 category            = EXCLUDED.category,
+                 tags                = EXCLUDED.tags,
+                 summary             = EXCLUDED.summary,
+                 quality_score       = EXCLUDED.quality_score,
+                 classifier_provider = EXCLUDED.classifier_provider,
+                 is_official         = EXCLUDED.is_official,
+                 updated_at          = NOW()"""
         ),
         {
             "full_name": full_name,
@@ -202,6 +205,7 @@ def _upsert_server(conn, repo: dict[str, Any], classification: dict[str, Any],
             "tags": classification.get("tags", []),
             "summary": classification.get("summary"),
             "quality_score": _quality_score(repo, readme),
+            "classifier_provider": classification.get("_provider"),
             "is_official": is_official,
         },
     )
@@ -255,12 +259,13 @@ def run_crawl(limit: int | None = None) -> dict[str, Any]:
             full_name = repo["full_name"]
             try:
                 readme = get_readme(full_name)
-                classification = classify_server(
+                classification, provider = classify_server(
                     repo["name"],
                     repo.get("description"),
                     repo.get("topics", []),
                     readme,
                 )
+                classification["_provider"] = provider
                 with engine().begin() as conn:
                     status, was_new = _upsert_server(conn, repo, classification, readme)
                 if was_new:
@@ -303,3 +308,111 @@ def run_crawl(limit: int | None = None) -> dict[str, Any]:
     result = {"seen": seen, "new": new, "updated": updated, "crawl_id": int(crawl_id)}
     logger.info(f"[crawl] done · {result}")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Reclassify
+# ---------------------------------------------------------------------------
+def reclassify_pending(limit: int | None = None) -> dict[str, Any]:
+    """Re-clasifica servers que cayeron al fallback heurístico (o NULL).
+
+    Usa el README ya cacheado en raw.servers.readme_md (no toca GitHub).
+    Llama al provider actual del settings (gemini > groq > anthropic > heuristic).
+    UPDATE solo los campos clasificatorios — el resto del row no se toca.
+
+    Si `limit` es None, procesa todos los pendientes. Útil para reanudar.
+    """
+    sql = (
+        """SELECT id, name, description, topics, readme_md, classifier_provider
+             FROM raw.servers
+            WHERE classifier_provider IS NULL
+               OR classifier_provider = 'heuristic'
+            ORDER BY stars DESC, indexed_at DESC"""
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = fetch_all(sql)
+
+    logger.info(f"[reclassify] {len(rows)} servers pending")
+    if not rows:
+        return {"updated": 0, "skipped": 0, "errors": 0, "by_provider": {}}
+
+    updated = 0
+    skipped = 0
+    errors = 0
+    by_provider: dict[str, int] = {}
+
+    for i, row in enumerate(rows, start=1):
+        sid = row["id"]
+        name = row["name"]
+        try:
+            classification, provider = classify_server(
+                name,
+                row.get("description"),
+                row.get("topics") or [],
+                row.get("readme_md"),
+            )
+
+            # Si seguimos en heurístico (no hay key disponible para LLM), skip
+            old_provider = row.get("classifier_provider")
+            if provider == "heuristic" and old_provider in ("heuristic", None):
+                skipped += 1
+                if i % 25 == 0:
+                    logger.info(f"[reclassify] {i}/{len(rows)} no LLM available, stopping early")
+                # Si NUNCA hay LLM, no tiene sentido seguir
+                if not _any_llm_available():
+                    logger.warning(
+                        "[reclassify] no LLM provider available (no API keys). Stopping."
+                    )
+                    break
+                continue
+
+            new_install_cmd = classification.get("install_command")
+
+            with engine().begin() as conn:
+                conn.execute(
+                    text(
+                        """UPDATE raw.servers
+                              SET category            = :cat,
+                                  tags                = :tags,
+                                  summary             = :summary,
+                                  install_command     = COALESCE(:install_cmd, install_command),
+                                  classifier_provider = :provider,
+                                  updated_at          = NOW()
+                            WHERE id = :id"""
+                    ),
+                    {
+                        "id": sid,
+                        "cat": classification.get("category"),
+                        "tags": classification.get("tags", []),
+                        "summary": classification.get("summary"),
+                        "install_cmd": new_install_cmd,
+                        "provider": provider,
+                    },
+                )
+
+            updated += 1
+            by_provider[provider] = by_provider.get(provider, 0) + 1
+            if i % 25 == 0 or i == len(rows):
+                logger.info(
+                    f"[reclassify] {i}/{len(rows)} {name} → {classification.get('category')} ({provider})"
+                )
+        except Exception as e:
+            errors += 1
+            logger.warning(f"[reclassify] {name} failed: {e}")
+
+    result = {
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "by_provider": by_provider,
+        "total_pending": len(rows),
+    }
+    logger.info(f"[reclassify] done · {result}")
+    return result
+
+
+def _any_llm_available() -> bool:
+    """Indica si hay al menos una API key de LLM configurada."""
+    from mcp_crawler.config import settings as s
+    return bool(s.google_api_key or s.groq_api_key or s.anthropic_api_key)

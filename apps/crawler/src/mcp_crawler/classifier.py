@@ -198,23 +198,27 @@ def classify_server(
     description: str | None,
     topics: list[str],
     readme: str | None,
-) -> dict[str, Any]:
-    """Devuelve {category, tags, summary, install_command}."""
+) -> tuple[dict[str, Any], str]:
+    """Devuelve ({category, tags, summary, install_command}, provider_used).
+
+    `provider_used` ∈ {gemini, groq, anthropic, heuristic}.
+    Si el provider primario peta o no hay LLM keys, cae a heuristic.
+    """
     provider = settings.resolved_provider()
 
     if provider == "heuristic":
-        return _heuristic(name, description or "", topics)
+        return _heuristic(name, description or "", topics), "heuristic"
 
     try:
         if provider == "gemini":
-            return _classify_gemini(name, description, topics, readme)
+            return _classify_gemini(name, description, topics, readme), "gemini"
         if provider == "groq":
-            return _classify_groq(name, description, topics, readme)
+            return _classify_groq(name, description, topics, readme), "groq"
         if provider == "anthropic":
-            return _classify_anthropic(name, description, topics, readme)
+            return _classify_anthropic(name, description, topics, readme), "anthropic"
     except Exception as e:
         logger.warning(f"[classifier] {provider} failed for {name}: {e}. Falling back to heuristic.")
-        return _heuristic(name, description or "", topics)
+        return _heuristic(name, description or "", topics), "heuristic"
 
     # Unreachable
-    return _heuristic(name, description or "", topics)
+    return _heuristic(name, description or "", topics), "heuristic"

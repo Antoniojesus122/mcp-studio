@@ -1,9 +1,11 @@
 """Prefect flow del crawler.
 
 Uso manual:
-    python -m mcp_crawler.flows               → crawl completo
-    python -m mcp_crawler.flows --limit 10    → solo primeros 10 (dev)
-    python -m mcp_crawler.flows --serve       → schedule cada 1h
+    python -m mcp_crawler.flows                       → crawl completo
+    python -m mcp_crawler.flows --limit 10            → solo primeros 10 (dev)
+    python -m mcp_crawler.flows --serve               → schedule cada 1h
+    python -m mcp_crawler.flows --reclassify          → re-clasifica servers heurísticos
+    python -m mcp_crawler.flows --reclassify --limit 200
 """
 
 import argparse
@@ -12,7 +14,7 @@ import sys
 from loguru import logger
 from prefect import flow, task
 
-from mcp_crawler.crawler import run_crawl
+from mcp_crawler.crawler import reclassify_pending, run_crawl
 
 
 @task(retries=2, retry_delay_seconds=60, log_prints=True)
@@ -20,18 +22,33 @@ def crawl_task(limit: int | None = None) -> dict:
     return run_crawl(limit=limit)
 
 
+@task(retries=1, retry_delay_seconds=30, log_prints=True)
+def reclassify_task(limit: int | None = None) -> dict:
+    return reclassify_pending(limit=limit)
+
+
 @flow(name="mcp-studio-crawl", log_prints=True)
 def crawl_flow(limit: int | None = None) -> dict:
     return crawl_task(limit)
 
 
+@flow(name="mcp-studio-reclassify", log_prints=True)
+def reclassify_flow(limit: int | None = None) -> dict:
+    return reclassify_task(limit)
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser(description="MCP Studio crawler CLI")
-    parser.add_argument("--limit", type=int, default=None, help="Solo procesar N repos (dev)")
+    parser.add_argument("--limit", type=int, default=None, help="Limitar nº de items")
+    parser.add_argument(
+        "--reclassify",
+        action="store_true",
+        help="Re-clasifica servers con classifier_provider NULL o 'heuristic'",
+    )
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="Servir flow con schedule cada 1h",
+        help="Servir crawl flow con schedule cada 1h",
     )
     args = parser.parse_args()
 
@@ -44,7 +61,11 @@ def _main() -> int:
         )
         return 0
 
-    result = crawl_flow(args.limit)
+    if args.reclassify:
+        result = reclassify_flow(args.limit)
+    else:
+        result = crawl_flow(args.limit)
+
     logger.info(f"Done · {result}")
     return 0
 
