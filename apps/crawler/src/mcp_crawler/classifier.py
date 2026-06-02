@@ -1,15 +1,19 @@
-"""Categorización de servidores MCP usando Claude (con fallback heurístico).
+"""Categorización de servidores MCP — multi-provider.
 
-Devuelve un dict por server con:
-  - category: slug que existe en raw.categories
-  - tags: lista de strings descriptivos
-  - summary: una línea explicando qué hace
-  - install_command: el comando de instalación si lo detecta
+Backends soportados (orden de preferencia con LLM_PROVIDER=auto):
+  1. Gemini 2.0 Flash  (Google · 1500 req/día gratis)
+  2. Groq Llama 3.3   (Groq · 14400 req/día gratis)
+  3. Anthropic Claude  (de pago pero muy bueno)
+  4. Heuristic         (sin LLM · siempre disponible)
+
+Todos devuelven el mismo schema:
+  {category, tags, summary, install_command}
 """
 
 import json
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from mcp_crawler.config import settings
@@ -19,7 +23,8 @@ CATEGORY_SLUGS = [
     "productivity", "cloud", "comms", "finance", "media", "iot", "misc",
 ]
 
-SYSTEM_PROMPT = f"""You are categorising public MCP (Model Context Protocol) servers.
+PROMPT = f"""You are categorising public MCP (Model Context Protocol) servers.
+
 Given the name, description, topics and README of a GitHub repo that implements an MCP server,
 return a JSON object with these exact keys:
 
@@ -28,7 +33,7 @@ return a JSON object with these exact keys:
   - summary: ONE sentence in English explaining what the server lets an LLM do (max 140 chars)
   - install_command: the most likely install command (npm/pip/uvx/docker), or null if you cannot tell
 
-Examples of categories:
+Examples:
   - filesystem: read/write files, dropbox, gdrive
   - search: web search, scraping, fetch URLs
   - database: postgres, mysql, sqlite, mongo, redis, vector db
@@ -42,13 +47,46 @@ Examples of categories:
   - iot: home assistant, hardware control
   - misc: anything else
 
-Respond with ONLY the JSON object, no markdown."""
+Respond with ONLY the JSON object, no markdown, no code fences."""
 
 
-def _heuristic_classify(name: str, description: str, topics: list[str]) -> dict[str, Any]:
-    """Fallback sin LLM: keyword matching simple."""
+def _build_user_content(name: str, description: str | None, topics: list[str], readme: str | None) -> str:
+    return (
+        f"name: {name}\n"
+        f"description: {description or '(none)'}\n"
+        f"topics: {', '.join(topics) or '(none)'}\n\n"
+        f"README:\n{(readme or '')[:6000]}"
+    )
+
+
+def _parse_json_response(raw: str) -> dict[str, Any]:
+    """Quita fences ```json``` y parsea. Sanitiza al schema esperado."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        # Quitar primera línea (```json o ```) y última (```)
+        lines = raw.split("\n")
+        lines = lines[1:] if lines[0].startswith("```") else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+
+    data = json.loads(raw)
+    return _sanitize(data)
+
+
+def _sanitize(data: dict[str, Any]) -> dict[str, Any]:
+    if data.get("category") not in CATEGORY_SLUGS:
+        data["category"] = "misc"
+    data["tags"] = [str(t).lower() for t in (data.get("tags") or [])][:5]
+    data["summary"] = (data.get("summary") or "")[:200]
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Heuristic fallback (sin LLM)
+# ---------------------------------------------------------------------------
+def _heuristic(name: str, description: str, topics: list[str]) -> dict[str, Any]:
     text = " ".join([name, description or "", *topics]).lower()
-
     rules: list[tuple[str, list[str]]] = [
         ("filesystem", ["filesystem", "files", "dropbox", "drive", "s3 ", "storage"]),
         ("search", ["search", "google", "brave", "web", "scrape", "crawl", "fetch"]),
@@ -78,53 +116,93 @@ def _heuristic_classify(name: str, description: str, topics: list[str]) -> dict[
     }
 
 
+# ---------------------------------------------------------------------------
+# Provider implementations
+# ---------------------------------------------------------------------------
+def _classify_gemini(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:
+    """Google Gemini 2.0 Flash via google-genai SDK."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=settings.google_api_key)
+    response = client.models.generate_content(
+        model=settings.gemini_model,
+        contents=_build_user_content(name, description, topics, readme),
+        config=types.GenerateContentConfig(
+            system_instruction=PROMPT,
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=512,
+        ),
+    )
+    return _parse_json_response(response.text or "")
+
+
+def _classify_groq(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:
+    """Groq via REST (OpenAI-compatible)."""
+    with httpx.Client(timeout=30.0) as client:
+        r = client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.groq_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.groq_model,
+                "messages": [
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": _build_user_content(name, description, topics, readme)},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+            },
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
+    raw = r.json()["choices"][0]["message"]["content"]
+    return _parse_json_response(raw)
+
+
+def _classify_anthropic(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    resp = client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=512,
+        system=PROMPT,
+        messages=[{"role": "user", "content": _build_user_content(name, description, topics, readme)}],
+    )
+    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    return _parse_json_response(raw)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 def classify_server(
     name: str,
     description: str | None,
     topics: list[str],
     readme: str | None,
 ) -> dict[str, Any]:
-    """Devuelve {category, tags, summary, install_command}.
+    """Devuelve {category, tags, summary, install_command}."""
+    provider = settings.resolved_provider()
 
-    Si Anthropic está configurado, usa Claude. Si no, fallback heurístico.
-    """
-    if not settings.anthropic_api_key:
-        return _heuristic_classify(name, description or "", topics)
+    if provider == "heuristic":
+        return _heuristic(name, description or "", topics)
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        readme_excerpt = (readme or "")[:6000]  # limitar tokens
-        user_content = (
-            f"name: {name}\n"
-            f"description: {description or '(none)'}\n"
-            f"topics: {', '.join(topics) or '(none)'}\n\n"
-            f"README:\n{readme_excerpt}"
-        )
-
-        resp = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=512,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        # Pull JSON from the text response
-        raw = ""
-        for block in resp.content:
-            if getattr(block, "type", None) == "text":
-                raw += block.text
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`").lstrip("json").strip()
-
-        data = json.loads(raw)
-        # Sanitize
-        if data.get("category") not in CATEGORY_SLUGS:
-            data["category"] = "misc"
-        data["tags"] = [str(t).lower() for t in (data.get("tags") or [])][:5]
-        data["summary"] = (data.get("summary") or "")[:200]
-        return data
+        if provider == "gemini":
+            return _classify_gemini(name, description, topics, readme)
+        if provider == "groq":
+            return _classify_groq(name, description, topics, readme)
+        if provider == "anthropic":
+            return _classify_anthropic(name, description, topics, readme)
     except Exception as e:
-        logger.warning(f"[classifier] Claude failed for {name}, falling back: {e}")
-        return _heuristic_classify(name, description or "", topics)
+        logger.warning(f"[classifier] {provider} failed for {name}: {e}. Falling back to heuristic.")
+        return _heuristic(name, description or "", topics)
+
+    # Unreachable
+    return _heuristic(name, description or "", topics)
