@@ -139,29 +139,41 @@ def _classify_gemini(name: str, description: str | None, topics: list[str], read
 
 
 def _classify_groq(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:
-    """Groq via REST (OpenAI-compatible)."""
-    with httpx.Client(timeout=30.0) as client:
-        r = client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.groq_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.groq_model,
-                "messages": [
-                    {"role": "system", "content": PROMPT},
-                    {"role": "user", "content": _build_user_content(name, description, topics, readme)},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 512,
-                "response_format": {"type": "json_object"},
-            },
-        )
-    if r.status_code != 200:
-        raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
-    raw = r.json()["choices"][0]["message"]["content"]
-    return _parse_json_response(raw)
+    """Groq via REST (OpenAI-compatible). 1 retry en timeout."""
+    payload = {
+        "model": settings.groq_model,
+        "messages": [
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": _build_user_content(name, description, topics, readme)},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 512,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.groq_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                r = client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+            if r.status_code != 200:
+                raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
+            return _parse_json_response(r.json()["choices"][0]["message"]["content"])
+        except httpx.ReadTimeout as e:
+            last_exc = e
+            logger.debug(f"[groq] timeout for {name}, retry {attempt + 1}")
+        except Exception as e:
+            # 401 / parse error / etc · no reintentamos
+            raise e
+    raise last_exc or RuntimeError("Groq timeout after retry")
 
 
 def _classify_anthropic(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:
