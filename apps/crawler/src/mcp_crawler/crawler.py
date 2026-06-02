@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from loguru import logger
+from psycopg.types.json import Jsonb
 from sqlalchemy import text
 
 from mcp_crawler.classifier import classify_server
@@ -196,7 +197,7 @@ def _upsert_server(conn, repo: dict[str, Any], classification: dict[str, Any],
             "readme_md": readme,
             "readme_excerpt": _readme_excerpt(readme),
             "install_command": classification.get("install_command") or _extract_install_command(readme),
-            "install_config": install_config,
+            "install_config": Jsonb(install_config) if install_config else None,
             "category": classification.get("category"),
             "tags": classification.get("tags", []),
             "summary": classification.get("summary"),
