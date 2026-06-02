@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
+import { getLang } from '@/lib/lang-server'
 import './globals.css'
 
 const inter = Inter({
@@ -42,9 +43,10 @@ export const viewport: Viewport = {
   themeColor: '#0a0a0c',
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const lang = await getLang()
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrains.variable} h-full antialiased`}>
+    <html lang={lang} className={`${inter.variable} ${jetbrains.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-bg text-text font-sans">{children}</body>
     </html>
   )

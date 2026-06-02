@@ -2,6 +2,8 @@
 
 import Link from 'next/link'
 import { useState } from 'react'
+import type { AskChatDict } from '@/lib/i18n'
+export type { AskChatDict }
 
 interface ServerLite {
   id: number
@@ -22,16 +24,8 @@ interface ApiResponse {
   recommendations: { server: ServerLite; reasoning: string }[]
 }
 
-const SUGGESTIONS = [
-  'Read my emails from Gmail',
-  'Connect Claude to my Postgres database',
-  'Search the web with citations',
-  'Manage my Notion workspace',
-  'Run shell commands safely',
-  'Read PDFs and summarise',
-]
-
-export function AskChat() {
+export function AskChat({ dict }: { dict: AskChatDict }) {
+  const SUGGESTIONS = dict.ask_suggestions
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,13 +50,13 @@ export function AskChat() {
       }
       if (!r.ok) {
         const data = await r.json().catch(() => ({}))
-        setError(data.message || 'Something went wrong.')
+        setError(data.message || dict.ask_generic_error)
         return
       }
       const data = (await r.json()) as ApiResponse
       setResult(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Network error')
+      setError(e instanceof Error ? e.message : dict.ask_network_error)
     } finally {
       setLoading(false)
     }
@@ -83,7 +77,7 @@ export function AskChat() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="e.g. I need to read my Gmail with Claude"
+            placeholder={dict.ask_input_placeholder}
             disabled={loading}
             maxLength={500}
             autoFocus
@@ -94,7 +88,7 @@ export function AskChat() {
             disabled={loading || !q.trim()}
             className="ml-3 px-4 py-1.5 rounded-lg bg-brand text-bg font-semibold text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand/90 transition-colors"
           >
-            {loading ? '…' : 'Ask'}
+            {loading ? '…' : dict.ask_button}
           </button>
         </div>
       </form>
@@ -103,7 +97,7 @@ export function AskChat() {
       {!result && !loading && !error && (
         <div>
           <div className="font-mono text-[10px] text-text-mute uppercase tracking-widest mb-3">
-            try
+            {dict.ask_try}
           </div>
           <div className="flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
@@ -130,7 +124,7 @@ export function AskChat() {
       {/* Error */}
       {error && (
         <div className="bg-surface border border-pink/40 rounded-2xl p-5">
-          <div className="font-mono text-[10px] text-pink uppercase tracking-widest mb-2">error</div>
+          <div className="font-mono text-[10px] text-pink uppercase tracking-widest mb-2">{dict.ask_error}</div>
           <p className="text-text-dim">{error}</p>
         </div>
       )}
@@ -138,10 +132,9 @@ export function AskChat() {
       {/* Off-topic */}
       {result && result.is_off_topic && (
         <div className="bg-surface border border-border rounded-2xl p-6">
-          <div className="font-mono text-[10px] text-brand uppercase tracking-widest mb-2">off-topic</div>
+          <div className="font-mono text-[10px] text-brand uppercase tracking-widest mb-2">{dict.ask_off_topic_eyebrow}</div>
           <p className="text-text-dim leading-relaxed">
-            {result.off_topic_reply ||
-              "I can only help finding MCP servers. Try asking about what you'd like to connect to Claude."}
+            {result.off_topic_reply || dict.ask_off_topic_default}
           </p>
         </div>
       )}
@@ -151,7 +144,7 @@ export function AskChat() {
         <div className="space-y-4">
           {result.answer && (
             <div className="bg-surface border border-border rounded-2xl p-6">
-              <div className="font-mono text-[10px] text-brand uppercase tracking-widest mb-2">studio says</div>
+              <div className="font-mono text-[10px] text-brand uppercase tracking-widest mb-2">{dict.ask_studio_says}</div>
               <p className="text-text leading-relaxed">{result.answer}</p>
             </div>
           )}
@@ -159,8 +152,9 @@ export function AskChat() {
           {result.recommendations.length === 0 ? (
             <div className="bg-surface border border-dashed border-border rounded-2xl p-6 text-center">
               <p className="text-text-dim">
-                No MCP server in our index matches that. Try{' '}
-                <Link href="/browse" className="text-brand hover:underline">browse</Link> manually.
+                {dict.ask_no_match_a}{' '}
+                <Link href="/browse" className="text-brand hover:underline">{dict.ask_no_match_browse}</Link>{' '}
+                {dict.ask_no_match_b}
               </p>
             </div>
           ) : (
@@ -205,7 +199,7 @@ export function AskChat() {
               onClick={() => { setResult(null); setQ('') }}
               className="font-mono text-[12px] text-text-mute hover:text-text-dim"
             >
-              ← ask another question
+              {dict.ask_another}
             </button>
           </div>
         </div>
