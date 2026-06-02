@@ -77,6 +77,13 @@ export default async function LandingPage() {
         </p>
         <div className="max-w-xl mx-auto">
           <SearchBar autoFocus />
+          <Link
+            href="/ask"
+            className="mt-4 inline-flex items-center gap-2 font-mono text-[12px] text-text-dim hover:text-brand transition-colors"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand animate-pulse-soft" />
+            or ask in plain English →
+          </Link>
         </div>
         {stats && (
           <div className="mt-12 flex flex-wrap items-center justify-center gap-6 md:gap-10 font-mono text-[12px] text-text-dim">
