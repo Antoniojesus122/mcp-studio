@@ -341,6 +341,8 @@ def reclassify_pending(limit: int | None = None) -> dict[str, Any]:
     skipped = 0
     errors = 0
     by_provider: dict[str, int] = {}
+    consecutive_heuristic = 0
+    HEURISTIC_BAIL_THRESHOLD = 5  # tras 5 fallbacks seguidos → quota agotada, paramos
 
     for i, row in enumerate(rows, start=1):
         sid = row["id"]
@@ -353,19 +355,20 @@ def reclassify_pending(limit: int | None = None) -> dict[str, Any]:
                 row.get("readme_md"),
             )
 
-            # Si seguimos en heurístico (no hay key disponible para LLM), skip
-            old_provider = row.get("classifier_provider")
-            if provider == "heuristic" and old_provider in ("heuristic", None):
+            # Detectar quota agotada del LLM: si caemos a heurístico repetidamente
+            # paramos para no seguir gastando llamadas que van a fallar.
+            if provider == "heuristic":
+                consecutive_heuristic += 1
                 skipped += 1
-                if i % 25 == 0:
-                    logger.info(f"[reclassify] {i}/{len(rows)} no LLM available, stopping early")
-                # Si NUNCA hay LLM, no tiene sentido seguir
-                if not _any_llm_available():
+                if consecutive_heuristic >= HEURISTIC_BAIL_THRESHOLD:
                     logger.warning(
-                        "[reclassify] no LLM provider available (no API keys). Stopping."
+                        f"[reclassify] {consecutive_heuristic} fallbacks consecutivos a heuristic "
+                        f"→ quota del LLM probablemente agotada. Parando en {i}/{len(rows)}."
                     )
                     break
                 continue
+            else:
+                consecutive_heuristic = 0  # reset al primer éxito del LLM
 
             new_install_cmd = classification.get("install_command")
 
