@@ -51,11 +51,14 @@ Respond with ONLY the JSON object, no markdown, no code fences."""
 
 
 def _build_user_content(name: str, description: str | None, topics: list[str], readme: str | None) -> str:
+    # README recortado a ~1500 chars (~400 tokens) para no agotar el TPM de Groq.
+    # Suficiente para que el LLM identifique la categoría y extraiga install hints
+    # — los detalles de implementación largos no aportan a la clasificación.
     return (
         f"name: {name}\n"
         f"description: {description or '(none)'}\n"
         f"topics: {', '.join(topics) or '(none)'}\n\n"
-        f"README:\n{(readme or '')[:6000]}"
+        f"README:\n{(readme or '')[:1500]}"
     )
 
 
@@ -156,7 +159,7 @@ def _classify_groq(name: str, description: str | None, topics: list[str], readme
     }
 
     last_exc: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             with httpx.Client(timeout=60.0) as client:
                 r = client.post(
@@ -164,6 +167,16 @@ def _classify_groq(name: str, description: str | None, topics: list[str], readme
                     headers=headers,
                     json=payload,
                 )
+            if r.status_code == 429:
+                # Rate-limit: parsear retry-after (header) o el "Please try again in Xs"
+                # del mensaje, dormir y volver a intentar.
+                wait = _parse_groq_retry_after(r) if attempt < 2 else 0
+                if wait > 0:
+                    logger.debug(f"[groq] 429 for {name}, sleeping {wait:.1f}s (attempt {attempt + 1}/3)")
+                    import time as _t
+                    _t.sleep(min(wait, 65.0))  # cap absurd waits
+                    continue
+                raise RuntimeError(f"Groq 429: {r.text[:200]}")
             if r.status_code != 200:
                 raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
             return _parse_json_response(r.json()["choices"][0]["message"]["content"])
@@ -173,7 +186,32 @@ def _classify_groq(name: str, description: str | None, topics: list[str], readme
         except Exception as e:
             # 401 / parse error / etc · no reintentamos
             raise e
-    raise last_exc or RuntimeError("Groq timeout after retry")
+    raise last_exc or RuntimeError("Groq exhausted retries")
+
+
+def _parse_groq_retry_after(response) -> float:
+    """Devuelve segundos a esperar tras un 429 de Groq.
+
+    Prioridad:
+      1. Header `retry-after` (segundos).
+      2. Texto del error: "Please try again in 12.345s".
+      3. Fallback: 6s (Groq ratelimit window típico).
+    """
+    ra = response.headers.get("retry-after") or response.headers.get("Retry-After")
+    if ra:
+        try:
+            return float(ra)
+        except ValueError:
+            pass
+    try:
+        body = response.text
+        import re as _re
+        m = _re.search(r"try again in ([\d.]+)s", body, _re.IGNORECASE)
+        if m:
+            return float(m.group(1)) + 0.5  # small buffer
+    except Exception:
+        pass
+    return 6.0
 
 
 def _classify_anthropic(name: str, description: str | None, topics: list[str], readme: str | None) -> dict[str, Any]:

@@ -15,26 +15,59 @@ const jetbrains = JetBrains_Mono({
   weight: ['400', '500'],
 })
 
+const DESC =
+  'Discover, browse and install Model Context Protocol (MCP) servers in one click. ' +
+  '1,470+ servers indexed and AI-categorised. Works with Claude Desktop, Cursor, Cline & Continue.'
+
 export const metadata: Metadata = {
   metadataBase: new URL('https://mcpstudio.dev'),
   title: {
-    default: 'MCP Studio — Discover and install MCP servers',
+    default: 'MCP Studio — The App Store for your AI agents',
     template: '%s · MCP Studio',
   },
-  description:
-    'The best place to discover, browse and install Model Context Protocol servers. One-click install in Claude Desktop, Cursor, Cline and Continue.',
+  description: DESC,
   applicationName: 'MCP Studio',
-  authors: [{ name: 'Antonio Jesús' }],
+  authors: [{ name: 'Antonio Jesús', url: 'https://github.com/Antoniojesus122' }],
+  creator: 'Antonio Jesús',
+  publisher: 'MCP Studio',
+  category: 'technology',
   keywords: [
-    'MCP', 'Model Context Protocol', 'Claude', 'Anthropic', 'AI tools',
-    'AI agents', 'Cursor', 'Cline', 'Continue', 'LLM tools',
+    'MCP', 'Model Context Protocol', 'MCP server', 'MCP servers',
+    'Claude', 'Claude Desktop', 'Anthropic', 'Cursor', 'Cline', 'Continue',
+    'AI tools', 'AI agents', 'LLM tools', 'developer tools',
+    'agentic AI', 'tool use', 'function calling', 'MCP registry',
   ],
+  alternates: {
+    canonical: 'https://mcpstudio.dev',
+    languages: {
+      en: 'https://mcpstudio.dev',
+      es: 'https://mcpstudio.dev',
+    },
+  },
   openGraph: {
-    title: 'MCP Studio',
-    description: 'Discover, browse and install MCP servers in one click.',
+    title: 'MCP Studio — The App Store for your AI agents',
+    description: DESC,
+    url: 'https://mcpstudio.dev',
+    siteName: 'MCP Studio',
+    locale: 'en_US',
     type: 'website',
   },
-  twitter: { card: 'summary_large_image' },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'MCP Studio — The App Store for your AI agents',
+    description: DESC,
+    creator: '@Antoniojesus122',
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+    },
+  },
 }
 
 export const viewport: Viewport = {

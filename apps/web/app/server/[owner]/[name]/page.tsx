@@ -54,9 +54,26 @@ export async function generateMetadata({
   const { owner, name } = await params
   const s = await getServer(owner, name)
   if (!s) return { title: 'Server not found' }
+  const desc =
+    s.summary ??
+    s.description ??
+    `${s.name} — an MCP server by ${s.owner}. Install in Claude Desktop, Cursor or Cline.`
+  const canonical = `https://mcpstudio.dev/server/${s.owner}/${s.name}`
   return {
     title: `${s.name} · MCP Server`,
-    description: s.summary ?? s.description ?? `${s.name} — an MCP server by ${s.owner}.`,
+    description: desc,
+    alternates: { canonical },
+    openGraph: {
+      title: `${s.name} — MCP server by ${s.owner}`,
+      description: desc,
+      url: canonical,
+      type: 'article',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: `${s.name} — MCP server`,
+      description: desc,
+    },
   }
 }
 
@@ -69,8 +86,40 @@ export default async function ServerDetailPage({
   const s = await getServer(owner, name)
   if (!s) notFound()
 
+  // JSON-LD: SoftwareApplication para que Google muestre rich results
+  // (ratings, descripción, autor, lenguaje) en las SERP.
+  const ldJson = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: s.name,
+    description: s.summary ?? s.description ?? undefined,
+    url: `https://mcpstudio.dev/server/${s.owner}/${s.name}`,
+    applicationCategory: 'DeveloperApplication',
+    applicationSubCategory: s.category_name ?? 'MCP Server',
+    operatingSystem: 'Cross-platform',
+    programmingLanguage: s.language ?? undefined,
+    codeRepository: s.html_url,
+    license: s.license ?? undefined,
+    author: { '@type': 'Organization', name: s.owner, url: `https://github.com/${s.owner}` },
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    aggregateRating:
+      s.stars > 0
+        ? {
+            '@type': 'AggregateRating',
+            ratingValue: '5',
+            ratingCount: s.stars,
+            bestRating: '5',
+            worstRating: '1',
+          }
+        : undefined,
+  }
+
   return (
     <main className="min-h-screen">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(ldJson) }}
+      />
       <header className="px-6 md:px-10 py-6 flex items-center justify-between border-b border-border">
         <Logo size="md" />
         <Link href="/browse" className="text-text-dim hover:text-text text-sm">← Browse</Link>

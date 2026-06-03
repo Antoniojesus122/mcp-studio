@@ -51,8 +51,34 @@ export default async function LandingPage() {
     console.error('[landing] query failed', e)
   }
 
+  // JSON-LD: WebSite + SearchAction → Google muestra una sitelinks searchbox
+  // bajo el resultado de mcpstudio.dev en SERP.
+  const ldJson = {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: 'MCP Studio',
+    alternateName: 'mcp.studio',
+    url: 'https://mcpstudio.dev',
+    description:
+      'Discover, browse and install Model Context Protocol (MCP) servers in one click.',
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: 'https://mcpstudio.dev/browse?q={search_term_string}',
+      'query-input': 'required name=search_term_string',
+    },
+    publisher: {
+      '@type': 'Organization',
+      name: 'MCP Studio',
+      url: 'https://mcpstudio.dev',
+    },
+  }
+
   return (
     <main className="min-h-screen">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(ldJson) }}
+      />
       <Header lang={lang} dict={t} bordered={false} />
 
       <section className="px-6 md:px-10 pt-12 md:pt-24 pb-16 max-w-4xl mx-auto text-center">
